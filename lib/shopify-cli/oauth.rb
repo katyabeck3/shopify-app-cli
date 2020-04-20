@@ -16,7 +16,7 @@ module ShopifyCli
     LocalRequest = Struct.new(:method, :path, :query, :protocol)
 
     DEFAULT_PORT = 3456
-    REDIRECT_HOST = "https://app-cli-loopback.shopifyapps.com:#{DEFAULT_PORT}"
+    REDIRECT_HOST = "http://app-cli-loopback.shopifyapps.com:#{DEFAULT_PORT}"
     TEMPLATE = %{<!DOCTYPE html>
       <html>
       <head>
