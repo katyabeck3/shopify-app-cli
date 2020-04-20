@@ -5,8 +5,8 @@ require 'net/http'
 require 'securerandom'
 require 'openssl'
 require 'shopify_cli'
-require 'socket'
 require 'uri'
+require 'webrick'
 
 module ShopifyCli
   class OAuth
@@ -16,11 +16,8 @@ module ShopifyCli
     LocalRequest = Struct.new(:method, :path, :query, :protocol)
 
     DEFAULT_PORT = 3456
-    REDIRECT_HOST = "http://app-cli-loopback.shopifyapps.com:#{DEFAULT_PORT}"
-    TEMPLATE = %{HTTP/1.1 200
-      Content-Type: text/html
-
-      <!DOCTYPE html>
+    REDIRECT_HOST = "https://app-cli-loopback.shopifyapps.com:#{DEFAULT_PORT}"
+    TEMPLATE = %{<!DOCTYPE html>
       <html>
       <head>
         <title>%{title}</title>
@@ -84,44 +81,34 @@ module ShopifyCli
       ctx.open_url!(uri)
     end
 
-    def listen_local
-      server = TCPServer.new('127.0.0.1', DEFAULT_PORT)
-      @server_thread ||= Thread.new do
-        Thread.current.abort_on_exception = true
-        begin
-          socket = server.accept
-          req = decode_request(socket.gets)
-          if !req.query['error'].nil?
-            respond_with(socket, 400, "Invalid Request: #{req.query['error_description']}")
-          elsif req.query['state'] != state_token
-            req.query.merge!('error' => 'invalid_state', 'error_description' => INVALID_STATE_RESP)
-            respond_with(socket, 403, INVALID_STATE_RESP)
-          else
-            respond_with(socket, 200, SUCCESS_RESP)
-          end
-          req.query
-        ensure
-          socket.close_write
-          server.close
-        end
+    def server
+      @server ||= begin
+        WEBrick::HTTPServer.new(
+          Port: DEFAULT_PORT,
+          Logger: WEBrick::Log.new(File.open(File::NULL, 'w')),
+          AccessLog: [],
+        )
       end
     end
 
-    def decode_request(req)
-      data = LocalRequest.new
-      data.method, path, data.protocol = req.split(' ')
-      data.path, _sep, query = path.partition("?")
-      data.query = decode_request_params(query)
-      data
-    end
-
-    def decode_request_params(str)
-      str.b.split('&').each_with_object({}) do |string, params|
-        key, _sep, val = string.partition('=')
-        key = URI.decode_www_form_component(key)
-        val = URI.decode_www_form_component(val)
-        params[key] = val
-        params
+    def listen_local
+      @server_thread ||= Thread.new do
+        Thread.current.abort_on_exception = true
+        query = {}
+        server.mount_proc '/' do |req, res|
+          if !req.query['error'].nil?
+            respond_with(res, 400, "Invalid Request: #{req.query['error_description']}")
+          elsif req.query['state'] != state_token
+            req.query.merge!('error' => 'invalid_state', 'error_description' => INVALID_STATE_RESP)
+            respond_with(res, 403, INVALID_STATE_RESP)
+          else
+            respond_with(res, 200, SUCCESS_RESP)
+          end
+          server.stop
+          query = req.query
+        end
+        server.start
+        query
       end
     end
 
@@ -211,7 +198,7 @@ module ShopifyCli
       JSON.parse(res.body)
     end
 
-    def respond_with(resp, status, message)
+    def respond_with(response, status, message)
       successful = status == 200
       locals = {
         status: status,
@@ -220,7 +207,8 @@ module ShopifyCli
         title: successful ? 'Authenticate Successfully' : 'Failed to Authenticate',
         autoclose: successful ? AUTOCLOSE_TEMPLATE : '',
       }
-      resp.print(format(TEMPLATE, locals))
+      response.status = 200
+      response.body = format(TEMPLATE, locals)
     end
 
     def challange_params
